@@ -1,105 +1,120 @@
 import mediapipe as mp
-import numpy as np
 import cv2
-from collections import deque
-
-
-
-def check_hand_closing(finger_history,hand_landmarks,palm_center):
-    moving_fingers = 0
-    for finger_tip in finger_history.keys():
-        tip = np.array([hand_landmarks.landmark[finger_tip].x, hand_landmarks.landmark[finger_tip].y])
-
-        # Compute RELATIVE distance to wrist
-        relative_distance = np.linalg.norm(tip - palm_center)
-
-        # Store distance history
-        finger_history[finger_tip].append(relative_distance)
-
-        # Compute change in relative distance
-        if len(finger_history[finger_tip]) >= 2:
-            delta = finger_history[finger_tip][-1] - finger_history[finger_tip][0]
-
-            # If finger is closing
-            if delta < -movement_threshold:
-                moving_fingers += 1
-            elif delta > movement_threshold:
-                moving_fingers -= 1  # Finger extending
-    return moving_fingers
-
-
+import time
 
 # Initialize MediaPipe Hands
 mp_hands = mp.solutions.hands
 mp_draw = mp.solutions.drawing_utils
-hands = mp_hands.Hands(static_image_mode=False, max_num_hands=1, min_detection_confidence=0.5)
 
-# Store history of relative distances (finger to wrist)
-history_length = 5  # Number of frames to track changes
-finger_history = {8: deque(maxlen=history_length),  # Index finger tip
-                  12: deque(maxlen=history_length), # Middle finger tip
-                  16: deque(maxlen=history_length), # Ring finger tip
-                  20: deque(maxlen=history_length)} # Pinky finger tip
-# Store wrist position history
-wrist_history = deque(maxlen=5)  # Store last 5 wrist positions
-hand_events = {"close": [], "open": []}
-# State tracking
-hand_state = "opened"
-movement_threshold = 0.025  # Adjust sensitivity
-wrist_thre = 0.1
-# cap = cv2.VideoCapture("your_video.mp4")  # Change to your video file
-# cap = cv2.VideoCapture(0)  # Open webcam
-cap = cv2.VideoCapture('v722.MOV')  # Open webcam
+# Sensitivity Threshold (Higher = Less Sensitive)
+CURL_THRESHOLD = 0.03  # Adjust this to fine-tune sensitivity
+OPEN_THRESHOLD = -0.02
+def is_finger_curled(landmarks, finger_indices):
+    """
+    Detects if a finger is curled based on its landmarks with a threshold.
 
-ignore_this_frame = False
-while cap.isOpened():
-    ret, frame = cap.read()
-    if not ret:
-        break
+    Parameters:
+        landmarks (list): List of hand landmarks from MediaPipe.
+        finger_indices (tuple): Indices of the (MCP, PIP, DIP, TIP) joints for the finger.
+
+    Returns:
+        bool: True if the finger is curled, False if it is open.
+    """
+    MCP, PIP, DIP, TIP = finger_indices
+
+    # Y-values are used (lower values = higher on screen)
+    tip_y, dip_y, pip_y, mcp_y = landmarks[TIP].y, landmarks[DIP].y, landmarks[PIP].y, landmarks[MCP].y
+
+    # Finger is curled if the TIP is significantly lower than DIP & PIP
+    if (tip_y > dip_y + CURL_THRESHOLD) and (tip_y > pip_y + CURL_THRESHOLD):
+        return "curled"  # Finger is curled
     
-    frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-    results = hands.process(frame_rgb)
+    elif (tip_y < dip_y - OPEN_THRESHOLD) and (tip_y < pip_y - OPEN_THRESHOLD):
+        return "open"
+    return "buffer"  # Finger is open
 
-    if results.multi_hand_landmarks:
-        for hand_landmarks in results.multi_hand_landmarks:
-            mp_draw.draw_landmarks(frame, hand_landmarks, mp_hands.HAND_CONNECTIONS)
 
-            # Compute palm center (average of key palm landmarks)
-            palm_indices = [0, 1, 5, 9, 13, 17]  # Wrist and major palm landmarks
-            palm_center = np.mean([[hand_landmarks.landmark[i].x, hand_landmarks.landmark[i].y] for i in palm_indices], axis=0)
+def calculate_centroid(landmarks):
+    """
+    Calculate the centroid of the hand landmarks (average x, y).
+    """
+    x_coords = [landmarks[i].x for i in range(21)]
+    y_coords = [landmarks[i].y for i in range(21)]
+    centroid_x = sum(x_coords) / len(x_coords)
+    centroid_y = sum(y_coords) / len(y_coords)
+    return centroid_x, centroid_y
 
-            wrist = np.array([hand_landmarks.landmark[0].x, hand_landmarks.landmark[0].y])
 
-            # Compute wrist movement speed
-            if len(wrist_history) >= 2:
-                wrist_movement = np.linalg.norm(wrist_history[-1] - wrist_history[0])
-                # print(wrist_movement)
-                if wrist_movement > wrist_thre:
-                    ignore_this_frame = True  # Large wrist movement detected
-                else:
-                    ignore_this_frame = False
 
-            wrist_history.append(wrist)
-
-            moving_fingers = check_hand_closing(finger_history,hand_landmarks,palm_center)
-            print('moving finger '+str(moving_fingers))
-            if not ignore_this_frame:
-                # Check if hand is opening or closing (ignore whole-hand movement)
-                if moving_fingers >= 2 and hand_state != "holding":
-                    hand_state = "holding"
-                    hand_events["close"].append(tuple(palm_center))
-                elif moving_fingers <= -2 and hand_state != "opened":
+# Finger indices according to MediaPipe
+FINGER_INDICES = {
+    "thumb": (1, 2, 3, 4),
+    "index": (5, 6, 7, 8),
+    "middle": (9, 10, 11, 12),
+    "ring": (13, 14, 15, 16),
+    "pinky": (17, 18, 19, 20),
+}
+hand_state = "opened"
+last_state_duration = time.time()
+# Capture video
+hand_events = {"close": [], "open": []}
+cap = cv2.VideoCapture('v7.MOV')
+with mp_hands.Hands(min_detection_confidence=0.5, min_tracking_confidence=0.5) as hands:
+    while cap.isOpened():
+        ret, frame = cap.read()
+        if not ret:
+            break
+        
+        # Convert frame to RGB
+        rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        results = hands.process(rgb_frame)
+        
+        if results.multi_hand_landmarks:
+            for hand_landmarks in results.multi_hand_landmarks:
+                # Draw landmarks
+                mp_draw.draw_landmarks(frame, hand_landmarks, mp_hands.HAND_CONNECTIONS)
+                
+                # Extract landmark positions
+                landmarks = hand_landmarks.landmark
+                
+                # Check each finger's state
+                finger_states = {}
+                curled_fingers = 0
+                opened_fingers = 0
+                for finger, indices in FINGER_INDICES.items():
+                    is_curled = is_finger_curled(landmarks, indices)
+                    finger_states[finger] = is_curled
+                    if is_curled == "curled":
+                        curled_fingers += 1
+                    elif is_curled == "open":
+                        opened_fingers += 1
+                
+                if curled_fingers>=3 and hand_state!="holding" and time.time()-last_state_duration>1.0:
+                    hand_state="holding"
+                    last_state_duration = time.time()
+                    centroid_x, centroid_y = calculate_centroid(landmarks)
+                    hand_events["close"].append((centroid_x, centroid_y))
+                elif opened_fingers>2 and hand_state!="opened" and time.time()-last_state_duration>1.0:
                     hand_state = "opened"
-                    hand_events["open"].append(tuple(palm_center))
+                    last_state_duration = time.time()
+                    centroid_x, centroid_y = calculate_centroid(landmarks)
+                    hand_events["open"].append((centroid_x, centroid_y))
 
-            # Display state
-            cv2.putText(frame, f"State: {hand_state}", (50, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 255), 2)
 
-    cv2.imshow("Hand Gesture Detection", frame)
-    if cv2.waitKey(1) & 0xFF == ord('q'):
-        break
+                # Display the hand state
+                cv2.putText(frame, f"Hand State: {hand_state}", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
+
+                # Display each finger's state
+                for i, (finger, curled) in enumerate(finger_states.items()):
+                    text = f"{finger}: {curled}"
+                    cv2.putText(frame, text, (10, 60 + i * 20), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+
+        # Show frame
+        cv2.imshow("Hand Gesture Detection", frame)
+        
+        if cv2.waitKey(1) & 0xFF == ord('q'):
+            break
 
 cap.release()
 cv2.destroyAllWindows()
 print(hand_events)
-
