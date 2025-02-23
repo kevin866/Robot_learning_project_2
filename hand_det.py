@@ -46,10 +46,10 @@ hand_events = {"close": [], "open": []}
 # State tracking
 hand_state = "opened"
 movement_threshold = 0.025  # Adjust sensitivity
-wrist_thre = 0.05
+wrist_thre = 0.1
 # cap = cv2.VideoCapture("your_video.mp4")  # Change to your video file
 # cap = cv2.VideoCapture(0)  # Open webcam
-cap = cv2.VideoCapture('v7.MOV')  # Open webcam
+cap = cv2.VideoCapture('v722.MOV')  # Open webcam
 
 ignore_this_frame = False
 while cap.isOpened():
@@ -73,7 +73,7 @@ while cap.isOpened():
             # Compute wrist movement speed
             if len(wrist_history) >= 2:
                 wrist_movement = np.linalg.norm(wrist_history[-1] - wrist_history[0])
-                print(wrist_movement)
+                # print(wrist_movement)
                 if wrist_movement > wrist_thre:
                     ignore_this_frame = True  # Large wrist movement detected
                 else:
@@ -82,12 +82,13 @@ while cap.isOpened():
             wrist_history.append(wrist)
 
             moving_fingers = check_hand_closing(finger_history,hand_landmarks,palm_center)
+            print('moving finger '+str(moving_fingers))
             if not ignore_this_frame:
                 # Check if hand is opening or closing (ignore whole-hand movement)
-                if moving_fingers >= 3 and hand_state != "holding":
+                if moving_fingers >= 2 and hand_state != "holding":
                     hand_state = "holding"
                     hand_events["close"].append(tuple(palm_center))
-                elif moving_fingers <= -3 and hand_state != "opened":
+                elif moving_fingers <= -2 and hand_state != "opened":
                     hand_state = "opened"
                     hand_events["open"].append(tuple(palm_center))
 
